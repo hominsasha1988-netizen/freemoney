@@ -1,0 +1,15 @@
+{
+  "name": "telegram-referral-miniapp",
+  "version": "4.0.0",
+  "description": "Telegram Mini App: реферальна система з обов'язковою підпискою, виводом і адмін-панеллю",
+  "main": "server.js",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "test": "node --no-warnings --test test/e2e.test.js"
+  },
+  "dependencies": {}
+}
