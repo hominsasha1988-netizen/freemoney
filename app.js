@@ -113,6 +113,7 @@ function init() {
   loadState();
   renderChannels();
   bindGateEvents();
+  checkAdminStatus();
 
   // Якщо вже підписаний раніше — одразу в апку
   if (state.subscribed) {
@@ -797,6 +798,21 @@ function saveAdmin() {
   closeAdmin();
   showToast("Збережено");
   renderChannels();
+}
+
+
+async function checkAdminStatus() {
+  if (!API_BASE || !state.userId) return;
+  try {
+    const res = await fetch(`${API_BASE}/api/is-admin?userId=${state.userId}`);
+    const data = await res.json();
+    state.isAdmin = data.isAdmin;
+    saveState();
+    const adminBtn = document.getElementById("adminBtn");
+    if (adminBtn) adminBtn.style.display = state.isAdmin ? "flex" : "none";
+  } catch (e) {
+    console.warn(e);
+  }
 }
 
 // Start
