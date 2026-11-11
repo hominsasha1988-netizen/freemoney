@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: referral-miniapp
+    runtime: node
+    plan: starter            # диск недоступний на free-плані
+    buildCommand: "true"     # залежностей немає
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: BOT_TOKEN
+        sync: false          # задай у дашборді Render
+      - key: ADMIN_IDS
+        sync: false
+      - key: APP_SHORT_NAME
+        value: app
+      - key: DB_PATH
+        value: /var/data/app.db
+      - key: NODE_VERSION
+        value: "22"
+    disk:
+      name: data
+      mountPath: /var/data
+      sizeGB: 1

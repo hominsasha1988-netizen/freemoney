@@ -8,8 +8,10 @@
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div class="loading" id="loading">Завантаження…</div>
+
   <!-- ========== Subscription Gate ========== -->
-  <div class="gate" id="gate">
+  <div class="gate" id="gate" style="display:none;">
     <div class="gate-content">
       <div class="gate-icon">📢</div>
       <h1>Підписка обов’язкова</h1>
@@ -109,7 +111,7 @@
     </div>
 
     <section class="card tab-content active" id="tab-tasks">
-      <div class="section-title">Щоденні завдання</div>
+      <div class="section-title">Завдання</div>
       <div class="tasks-list" id="tasksList"></div>
     </section>
 
@@ -136,9 +138,10 @@
       <div class="withdraw-balance">
         Доступно: <span id="withdrawBalance">0</span> бонусів
       </div>
+      <div class="withdraw-hint" id="withdrawHint"></div>
       <div class="withdraw-form">
-        <input type="number" id="withdrawAmount" placeholder="Сума" min="1" />
-        <input type="text" id="withdrawAddress" placeholder="Адреса гаманця (USDT TRC20)" />
+        <input type="number" id="withdrawAmount" placeholder="Сума в бонусах" min="1" inputmode="numeric" />
+        <input type="text" id="withdrawAddress" placeholder="Адреса гаманця (USDT TRC20)" autocomplete="off" />
         <button class="btn primary full" id="withdrawBtn">Створити заявку</button>
       </div>
       <div class="section-title" style="margin-top:20px;">Мої заявки</div>
@@ -146,14 +149,8 @@
       <div class="empty-state" id="emptyWithdraw">Поки немає заявок</div>
     </section>
 
-    <div class="demo-panel" id="demoPanel" style="display:none;">
-      <div class="demo-title">Демо-режим</div>
-      <button class="btn secondary small" id="addRefBtn">+ Додати реферала</button>
-      <button class="btn secondary small" id="resetBtn">Скинути дані</button>
-    </div>
-
     <footer class="footer">
-      <small>Локальні дані • Готово до підключення бекенду</small>
+      <small>Бонуси нараховуються після того, як друг підпишеться на канали</small>
     </footer>
   </div>
 
@@ -165,7 +162,7 @@
       <p>Запрошуй друзів за своїм посиланням і отримуй бонуси. Чим більше активних рефералів — тим вищий рівень і більші нагороди.</p>
       <ul class="onboard-list">
         <li>Поділись посиланням</li>
-        <li>Отримуй бонуси за кожне запрошення</li>
+        <li>Отримуй бонуси за кожного друга, що підписався</li>
         <li>Підвищуй рівень і відкривай нагороди</li>
       </ul>
       <button class="btn primary full" id="startBtn">Почати</button>
@@ -182,23 +179,36 @@
         <h2>Адмін-панель</h2>
         <button class="btn-icon" id="closeAdmin">✕</button>
       </div>
-      
+
+      <div class="admin-stats" id="adminStats"></div>
+
+      <div class="admin-section">
+        <div class="section-title" id="adminPendingTitle">Заявки на вивід</div>
+        <div id="adminWithdrawals"></div>
+      </div>
+
       <div class="admin-section">
         <div class="section-title">Канали для підписки</div>
         <div id="adminChannels"></div>
         <div class="admin-add">
           <input type="text" id="newChannelTitle" placeholder="Назва" />
-          <input type="text" id="newChannelUsername" placeholder="username без @" />
+          <input type="text" id="newChannelUsername" placeholder="username каналу без @" />
           <button class="btn secondary small" id="addChannelBtn">+ Додати</button>
         </div>
+        <div class="admin-note">Бот має бути адміністратором каналу.</div>
       </div>
 
       <div class="admin-section">
-        <div class="section-title">Мін. сума виводу</div>
-        <input type="number" id="minWithdraw" value="100" />
+        <div class="section-title">Налаштування</div>
+        <label class="admin-label">Мін. сума виводу (бонусів)</label>
+        <input type="number" id="minWithdraw" min="1" />
+        <label class="admin-label">Бонус рефереру за друга (бонусів)</label>
+        <input type="number" id="refBonus" min="0" />
+        <label class="admin-label">Курс: скільки бонусів = 1 USDT</label>
+        <input type="number" id="usdtRate" min="1" />
       </div>
 
-      <button class="btn primary full" id="saveAdminBtn">Зберегти</button>
+      <button class="btn primary full" id="saveAdminBtn">Зберегти налаштування</button>
     </div>
   </div>
 
