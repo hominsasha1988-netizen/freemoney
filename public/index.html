@@ -172,46 +172,27 @@
   <div class="toast" id="toast"></div>
   <div class="confetti" id="confetti"></div>
 
-  <!-- Admin Panel -->
-  <div class="modal" id="adminModal">
-    <div class="modal-content admin-modal">
-      <div class="modal-header">
-        <h2>Адмін-панель</h2>
-        <button class="btn-icon" id="closeAdmin">✕</button>
-      </div>
-
-      <div class="admin-stats" id="adminStats"></div>
-
-      <div class="admin-section">
-        <div class="section-title" id="adminPendingTitle">Заявки на вивід</div>
-        <div id="adminWithdrawals"></div>
-      </div>
-
-      <div class="admin-section">
-        <div class="section-title">Канали для підписки</div>
-        <div id="adminChannels"></div>
-        <div class="admin-add">
-          <input type="text" id="newChannelTitle" placeholder="Назва" />
-          <input type="text" id="newChannelUsername" placeholder="username каналу без @" />
-          <button class="btn secondary small" id="addChannelBtn">+ Додати</button>
-        </div>
-        <div class="admin-note">Бот має бути адміністратором каналу.</div>
-      </div>
-
-      <div class="admin-section">
-        <div class="section-title">Налаштування</div>
-        <label class="admin-label">Мін. сума виводу (бонусів)</label>
-        <input type="number" id="minWithdraw" min="1" />
-        <label class="admin-label">Бонус рефереру за друга (бонусів)</label>
-        <input type="number" id="refBonus" min="0" />
-        <label class="admin-label">Курс: скільки бонусів = 1 USDT</label>
-        <input type="number" id="usdtRate" min="1" />
-      </div>
-
-      <button class="btn primary full" id="saveAdminBtn">Зберегти налаштування</button>
+  <!-- Admin Panel (v2) -->
+  <div class="adm" id="adminPanel" aria-hidden="true">
+    <div class="adm-top">
+      <button class="adm-iconbtn" id="admClose" aria-label="Закрити">←</button>
+      <div class="adm-title">Адмін-панель</div>
+      <button class="adm-iconbtn" id="admRefresh" aria-label="Оновити">⟳</button>
     </div>
+    <nav class="adm-tabs" id="admTabs">
+      <button data-adm="overview" class="active">📊 Огляд</button>
+      <button data-adm="withdrawals">💸 Заявки<span class="adm-badge" id="admBadge" hidden>0</span></button>
+      <button data-adm="users">👥 Юзери</button>
+      <button data-adm="channels">📢 Канали</button>
+      <button data-adm="rules">🎯 Правила</button>
+      <button data-adm="broadcast">✉️ Розсилка</button>
+      <button data-adm="settings">⚙️ Налаштування</button>
+    </nav>
+    <div class="adm-msg" id="admMsg" role="status" aria-live="polite"></div>
+    <div class="adm-body" id="admBody"></div>
   </div>
 
   <script src="app.js"></script>
+  <script src="admin.js"></script>
 </body>
 </html>
