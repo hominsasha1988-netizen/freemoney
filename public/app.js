@@ -11,7 +11,6 @@ const API_BASE = "";
 
 let S = null;            // стан із сервера
 let appBound = false;    // чи вже навішані обробники головного екрана
-let adminData = null;    // дані адмін-панелі
 
 const $ = (id) => document.getElementById(id);
 
@@ -74,6 +73,7 @@ async function init() {
   try {
     await reloadState();
   } catch (e) {
+    if (e.code === "banned") return showFatal("Доступ заблоковано", e.message);
     return showFatal("Не вдалося завантажити", e.message, true);
   }
 
@@ -110,7 +110,7 @@ function renderChannels() {
   const box = $("channelsList");
   box.innerHTML = "";
   S.channels.forEach((ch) => {
-    const st = channelStatus[ch.username];
+    const st = channelStatus[ch.id];
     const el = document.createElement("div");
     el.className = "channel-item" + (st === true ? " joined" : "") + (st === false ? " missing" : "");
     el.innerHTML = `
@@ -159,7 +159,7 @@ async function checkSubscriptions() {
       showToast("Підписку підтверджено!");
       setTimeout(openApp, 600);
     } else {
-      const missing = S.channels.filter((c) => !channelStatus[c.username]).map((c) => c.title);
+      const missing = S.channels.filter((c) => !channelStatus[c.id]).map((c) => c.title);
       errEl.textContent = "Не підписаний на: " + missing.join(", ");
       errEl.style.display = "block";
       haptic("medium");
@@ -436,10 +436,7 @@ function bindAppEvents() {
   });
 
   $("withdrawBtn").addEventListener("click", createWithdraw);
-  $("adminBtn").addEventListener("click", openAdmin);
-  $("closeAdmin").addEventListener("click", () => $("adminModal").classList.remove("show"));
-  $("addChannelBtn").addEventListener("click", adminAddChannel);
-  $("saveAdminBtn").addEventListener("click", adminSaveSettings);
+  $("adminBtn").addEventListener("click", () => window.AdminPanel?.open());
 }
 
 // ===== Withdraw =====
@@ -489,121 +486,6 @@ function renderWithdraw() {
       <div class="withdraw-status ${esc(w.status)}">${STATUS_TEXT[w.status] || esc(w.status)}</div>`;
     list.appendChild(el);
   });
-}
-
-// ===== Admin =====
-async function openAdmin() {
-  $("adminModal").classList.add("show");
-  try {
-    adminData = (await api("/api/admin/overview", { method: "POST", body: {} })).admin;
-    renderAdmin();
-  } catch (e) {
-    showToast(e.message);
-  }
-}
-
-function renderAdmin() {
-  const a = adminData;
-  const st = a.stats;
-  const rate = a.settings.usdtRate;
-
-  $("adminStats").innerHTML = `
-    <div class="admin-stat"><b>${st.users}</b><span>Юзерів</span></div>
-    <div class="admin-stat"><b>${st.referrals}</b><span>Рефералів</span></div>
-    <div class="admin-stat"><b>${st.balances}</b><span>Бонусів на балансах</span></div>
-    <div class="admin-stat"><b>${(st.paidSum / rate).toFixed(2)}</b><span>USDT виплачено</span></div>`;
-
-  // Заявки на вивід
-  const wl = $("adminWithdrawals");
-  wl.innerHTML = "";
-  $("adminPendingTitle").textContent = `Заявки на вивід (${st.pendingCount})`;
-  if (!a.pending.length) wl.innerHTML = '<div class="admin-empty">Немає заявок на розгляді</div>';
-  a.pending.forEach((w) => {
-    const el = document.createElement("div");
-    el.className = "admin-wd";
-    el.innerHTML = `
-      <div class="admin-wd-head">
-        <b>#${w.id} · ${esc(w.name)}${w.username ? " @" + esc(w.username) : ""}</b>
-        <span>${w.amount} ≈ ${(w.amount / rate).toFixed(2)} USDT</span>
-      </div>
-      <div class="admin-wd-addr" data-copy>${esc(w.address)}</div>
-      <div class="admin-wd-btns">
-        <button class="btn primary small" data-act="approve">✓ Виплачено</button>
-        <button class="btn secondary small" data-act="reject">✕ Відхилити</button>
-      </div>`;
-    el.querySelector("[data-copy]").addEventListener("click", () => {
-      navigator.clipboard?.writeText(w.address).then(() => showToast("Адресу скопійовано")).catch(() => {});
-    });
-    el.querySelectorAll("[data-act]").forEach((b) =>
-      b.addEventListener("click", () => resolveWithdraw(w, b.dataset.act))
-    );
-    wl.appendChild(el);
-  });
-
-  // Канали
-  const box = $("adminChannels");
-  box.innerHTML = "";
-  a.channels.forEach((ch) => {
-    const el = document.createElement("div");
-    el.className = "admin-channel";
-    el.innerHTML = `<span>${esc(ch.title)} <small>@${esc(ch.username)}</small></span><button class="btn-icon small">✕</button>`;
-    el.querySelector("button").addEventListener("click", async () => {
-      if (!confirm(`Видалити канал «${ch.title}» з обов'язкових?`)) return;
-      try {
-        adminData = (await api("/api/admin/channels/" + encodeURIComponent(ch.username), { method: "DELETE" })).admin;
-        renderAdmin();
-      } catch (e) { showToast(e.message); }
-    });
-    box.appendChild(el);
-  });
-
-  $("minWithdraw").value = a.settings.minWithdraw;
-  $("refBonus").value = a.settings.refBonus;
-  $("usdtRate").value = a.settings.usdtRate;
-}
-
-async function resolveWithdraw(w, act) {
-  const q = act === "approve"
-    ? `Підтверджуєш, що ВЖЕ відправив ${(w.amount / adminData.settings.usdtRate).toFixed(2)} USDT на цю адресу?\n${w.address}`
-    : `Відхилити заявку #${w.id}? Бонуси повернуться юзеру.`;
-  if (!confirm(q)) return;
-  try {
-    adminData = (await api("/api/admin/withdrawals/" + w.id, { method: "POST", body: { action: act } })).admin;
-    renderAdmin();
-    showToast(act === "approve" ? "Позначено як виплачено" : "Заявку відхилено");
-  } catch (e) { showToast(e.message); }
-}
-
-async function adminAddChannel() {
-  const title = $("newChannelTitle").value.trim();
-  const username = $("newChannelUsername").value.trim();
-  if (!username) return showToast("Введіть username каналу");
-  try {
-    const d = await api("/api/admin/channels", { method: "POST", body: { username, title } });
-    adminData = d.admin;
-    $("newChannelTitle").value = "";
-    $("newChannelUsername").value = "";
-    renderAdmin();
-    showToast(d.warning || "Канал додано");
-  } catch (e) { showToast(e.message); }
-}
-
-async function adminSaveSettings() {
-  try {
-    adminData = (await api("/api/admin/settings", {
-      method: "POST",
-      body: {
-        minWithdraw: parseInt($("minWithdraw").value, 10),
-        refBonus: parseInt($("refBonus").value, 10),
-        usdtRate: parseInt($("usdtRate").value, 10),
-      },
-    })).admin;
-    renderAdmin();
-    await reloadState();
-    render();
-    showToast("Збережено");
-    haptic("success");
-  } catch (e) { showToast(e.message); }
 }
 
 init();

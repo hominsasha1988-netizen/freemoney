@@ -8,7 +8,9 @@ const { openDb, tx } = require('./db');
 const { verifyInitData } = require('./auth');
 const { createTg, TgError } = require('./telegram');
 const { createBot } = require('./bot');
-const { LEVELS, BONUSES, TASKS, TRC20_RE } = require('./game');
+const { DEFAULT_CONFIG, TRC20_RE, validateConfig } = require('./game');
+const { ApiError } = require('./errors');
+const { createAdmin } = require('./admin');
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const MIME = {
@@ -21,18 +23,10 @@ const MIME = {
   '.ico': 'image/x-icon',
 };
 
-class ApiError extends Error {
-  constructor(status, code, message) {
-    super(message || code);
-    this.status = status;
-    this.code = code;
-  }
-}
-
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const now = () => Math.floor(Date.now() / 1000);
 
-function createApp({ config, db, tg, bot, log = console }) {
+function createApp({ config, db, tg, bot, log = console, broadcastDelayMs }) {
   // ---------- settings ----------
   const getSetting = (key) => db.prepare('SELECT value FROM settings WHERE key = ?').get(key)?.value;
   const getIntSetting = (key) => parseInt(getSetting(key), 10);
@@ -44,11 +38,35 @@ function createApp({ config, db, tg, bot, log = console }) {
     usdtRate: getIntSetting('usdt_rate'),
   });
 
+  // ---------- правила гри (рівні / нагороди / завдання), редагуються з адмінки ----------
+  let cfgCache = null;
+  function getGameConfig() {
+    if (cfgCache) return cfgCache;
+    const raw = getSetting('game_config');
+    if (raw) {
+      try { cfgCache = validateConfig(JSON.parse(raw)); return cfgCache; } catch (e) { log.error('game_config пошкоджений, беру типовий:', e.message); }
+    }
+    cfgCache = DEFAULT_CONFIG;
+    return cfgCache;
+  }
+  function saveGameConfig(cfg) {
+    setSetting('game_config', JSON.stringify(cfg));
+    cfgCache = cfg;
+  }
+
   const listChannels = () =>
-    db.prepare('SELECT username, title FROM channels ORDER BY position, rowid').all()
-      .map((c) => ({ username: c.username, title: c.title, url: `https://t.me/${c.username}` }));
+    db.prepare('SELECT id, chat, title, url FROM channels ORDER BY position, id').all();
 
   const isAdmin = (id) => config.adminIds.has(id);
+
+  const credit = (userId, amount, { countAsEarned = true } = {}) =>
+    db.prepare('UPDATE users SET balance = balance + ?, earned_total = earned_total + ? WHERE id = ?')
+      .run(amount, countAsEarned ? amount : 0, userId);
+
+  const admin = createAdmin({
+    db, tg, bot, config, now, esc, credit, settings, getIntSetting, setSetting,
+    getGameConfig, saveGameConfig, listChannels, broadcastDelayMs, log,
+  });
 
   // ---------- rate limit (в пам'яті, достатньо для одного інстансу) ----------
   const buckets = new Map();
@@ -94,12 +112,9 @@ function createApp({ config, db, tg, bot, log = console }) {
     });
   }
 
-  const credit = (userId, amount, { countAsEarned = true } = {}) =>
-    db.prepare('UPDATE users SET balance = balance + ?, earned_total = earned_total + ? WHERE id = ?')
-      .run(amount, countAsEarned ? amount : 0, userId);
-
   // ---------- стан для клієнта ----------
   function buildState(u) {
+    const cfg = getGameConfig();
     const counts = db.prepare(
       'SELECT COUNT(*) AS total, COALESCE(SUM(ref_rewarded), 0) AS active FROM users WHERE referrer_id = ?'
     ).get(u.id);
@@ -118,6 +133,7 @@ function createApp({ config, db, tg, bot, log = console }) {
     const top = db.prepare(
       `SELECT u.id, u.first_name AS name, u.earned_total AS earned, COUNT(r.id) AS refs
          FROM users u JOIN users r ON r.referrer_id = u.id AND r.ref_rewarded = 1
+        WHERE u.banned = 0
         GROUP BY u.id ORDER BY refs DESC, earned DESC LIMIT 10`
     ).all();
     const leaders = top.map((l, i) => ({ rank: i + 1, name: l.name, refs: l.refs, earned: l.earned, isMe: l.id === u.id }));
@@ -138,10 +154,10 @@ function createApp({ config, db, tg, bot, log = console }) {
       onboarded: !!u.onboarded,
       sharedOnce: !!u.shared_once,
       refLink: `https://t.me/${bot.username}/${config.appShortName}?startapp=ref_${u.id}`,
-      channels: listChannels(),
-      levels: LEVELS,
-      bonuses: BONUSES,
-      tasks: TASKS,
+      channels: listChannels().map((c) => ({ id: c.id, title: c.title, url: c.url })),
+      levels: cfg.levels,
+      bonuses: cfg.bonuses,
+      tasks: cfg.tasks,
       claimedTasks,
       claimedBonuses,
       referrals,
@@ -152,9 +168,9 @@ function createApp({ config, db, tg, bot, log = console }) {
   }
 
   // ---------- підписка ----------
-  async function isMember(username, userId) {
+  async function isMember(chat, userId) {
     try {
-      const m = await tg.call('getChatMember', { chat_id: '@' + username, user_id: userId });
+      const m = await tg.call('getChatMember', { chat_id: chat, user_id: userId });
       return ['creator', 'administrator', 'member'].includes(m.status) || (m.status === 'restricted' && m.is_member === true);
     } catch (e) {
       // «user not found» / «participant» = юзера в каналі немає. Інші помилки = проблема налаштування (бот не адмін тощо)
@@ -167,9 +183,9 @@ function createApp({ config, db, tg, bot, log = console }) {
     const results = {};
     for (const ch of listChannels()) {
       try {
-        results[ch.username] = await isMember(ch.username, userId);
+        results[ch.id] = await isMember(ch.chat, userId);
       } catch (e) {
-        log.error(`getChatMember @${ch.username}:`, e.message);
+        log.error(`getChatMember ${ch.chat}:`, e.message);
         throw new ApiError(502, 'channel_check_failed',
           `Не вдалося перевірити канал «${ch.title}». Адміністратор має додати бота в канал як адміністратора.`);
       }
@@ -183,7 +199,7 @@ function createApp({ config, db, tg, bot, log = console }) {
       const u = db.prepare('SELECT referrer_id, ref_rewarded FROM users WHERE id = ?').get(userId);
       if (!u || !u.referrer_id || u.ref_rewarded) return null;
       const bonus = getIntSetting('ref_bonus');
-      db.prepare('UPDATE users SET ref_rewarded = 1, ref_bonus_paid = ? WHERE id = ?').run(bonus, userId);
+      db.prepare('UPDATE users SET ref_rewarded = 1, ref_rewarded_at = ?, ref_bonus_paid = ? WHERE id = ?').run(now(), bonus, userId);
       credit(u.referrer_id, bonus);
       return { referrerId: u.referrer_id, bonus };
     });
@@ -206,7 +222,8 @@ function createApp({ config, db, tg, bot, log = console }) {
 
   function claim(u, body) {
     const { kind, id } = body || {};
-    const def = kind === 'task' ? TASKS.find((t) => t.id === id) : kind === 'bonus' ? BONUSES.find((b) => b.id === id) : null;
+    const cfg = getGameConfig();
+    const def = kind === 'task' ? cfg.tasks.find((t) => t.id === id) : kind === 'bonus' ? cfg.bonuses.find((b) => b.id === id) : null;
     if (!def) throw new ApiError(400, 'bad_request', 'Невідоме завдання');
     if (!u.subscribed) throw new ApiError(403, 'not_subscribed', 'Спочатку підпишись на канали');
 
@@ -262,72 +279,6 @@ function createApp({ config, db, tg, bot, log = console }) {
     }
   }
 
-  // ---------- адмінка ----------
-  function adminOverview() {
-    const stats = db.prepare(
-      `SELECT COUNT(*) AS users, COALESCE(SUM(subscribed),0) AS subscribed,
-              COALESCE(SUM(ref_rewarded),0) AS referrals, COALESCE(SUM(balance),0) AS balances FROM users`
-    ).get();
-    const pend = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS sum FROM withdrawals WHERE status = 'pending'").get();
-    const paid = db.prepare("SELECT COALESCE(SUM(amount),0) AS sum FROM withdrawals WHERE status = 'done'").get();
-    const pending = db.prepare(
-      `SELECT w.id, w.amount, w.address, w.created_at AS ts, u.id AS userId, u.first_name AS name, u.username
-         FROM withdrawals w JOIN users u ON u.id = w.user_id WHERE w.status = 'pending' ORDER BY w.id`
-    ).all();
-    return {
-      stats: { ...stats, pendingCount: pend.n, pendingSum: pend.sum, paidSum: paid.sum },
-      pending, channels: listChannels(), settings: settings(),
-    };
-  }
-
-  function adminSettings(body) {
-    const next = {};
-    for (const [field, key, min, max] of [['minWithdraw', 'min_withdraw', 1, 1e9], ['refBonus', 'ref_bonus', 0, 1e6], ['usdtRate', 'usdt_rate', 1, 1e6]]) {
-      if (body[field] === undefined) continue;
-      const n = Number(body[field]);
-      if (!Number.isSafeInteger(n) || n < min || n > max) throw new ApiError(400, 'bad_value', `Некоректне значення: ${field}`);
-      next[key] = n;
-    }
-    for (const [k, v] of Object.entries(next)) setSetting(k, v);
-  }
-
-  async function adminAddChannel(body) {
-    const username = String(body?.username ?? '').trim().replace(/^@/, '').replace(/^https?:\/\/t\.me\//i, '');
-    const title = String(body?.title ?? '').trim().slice(0, 64) || username;
-    if (!/^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(username)) throw new ApiError(400, 'bad_username', 'Некоректний username каналу');
-
-    // Перевіряємо, що канал існує і бот там адмін — інакше getChatMember не працюватиме
-    let warning = null;
-    try {
-      const me = await tg.call('getMe');
-      const m = await tg.call('getChatMember', { chat_id: '@' + username, user_id: me.id });
-      if (!['administrator', 'creator'].includes(m.status)) warning = 'Бот не є адміністратором каналу — перевірка підписки не працюватиме.';
-    } catch (e) {
-      throw new ApiError(400, 'channel_unreachable', 'Канал не знайдено або бот не доданий в нього як адміністратор.');
-    }
-    const pos = db.prepare('SELECT COALESCE(MAX(position), 0) + 1 AS p FROM channels').get().p;
-    db.prepare('INSERT OR REPLACE INTO channels(username, title, position) VALUES (?,?,?)').run(username, title, pos);
-    return warning;
-  }
-
-  async function adminResolve(id, body) {
-    const action = body?.action;
-    if (action !== 'approve' && action !== 'reject') throw new ApiError(400, 'bad_action', 'Невідома дія');
-    const wd = tx(db, () => {
-      const row = db.prepare('SELECT * FROM withdrawals WHERE id = ?').get(id);
-      if (!row) throw new ApiError(404, 'not_found', 'Заявку не знайдено');
-      const r = db.prepare("UPDATE withdrawals SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pending'")
-        .run(action === 'approve' ? 'done' : 'rejected', now(), id);
-      if (r.changes === 0) throw new ApiError(409, 'already_resolved', 'Заявку вже оброблено');
-      if (action === 'reject') credit(row.user_id, row.amount, { countAsEarned: false }); // повертаємо бонуси
-      return row;
-    });
-    const usdt = (wd.amount / getIntSetting('usdt_rate')).toFixed(2);
-    tg.notify(wd.user_id, action === 'approve'
-      ? `✅ Заявку #${wd.id} виплачено: <b>${usdt} USDT</b> (${wd.amount} бонусів).`
-      : `❌ Заявку #${wd.id} відхилено. <b>${wd.amount}</b> бонусів повернено на баланс.`);
-  }
-
   // ---------- HTTP ----------
   function readJson(req) {
     return new Promise((resolve, reject) => {
@@ -335,7 +286,7 @@ function createApp({ config, db, tg, bot, log = console }) {
       const chunks = [];
       req.on('data', (c) => {
         size += c.length;
-        if (size > 16 * 1024) { reject(new ApiError(413, 'too_large', 'Запит завеликий')); req.destroy(); return; }
+        if (size > 64 * 1024) { reject(new ApiError(413, 'too_large', 'Запит завеликий')); req.destroy(); return; }
         chunks.push(c);
       });
       req.on('end', () => {
@@ -367,6 +318,7 @@ function createApp({ config, db, tg, bot, log = console }) {
     const auth = authenticate(req);
     limit('api:' + auth.user.id, 120, 60000);
     const user = upsertUser(auth.user, auth.startParam);
+    if (user.banned && !isAdmin(user.id)) throw new ApiError(403, 'banned', 'Доступ заблоковано адміністратором');
     const state = () => buildState(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id));
     const method = req.method;
 
@@ -374,6 +326,13 @@ function createApp({ config, db, tg, bot, log = console }) {
 
     if (method !== 'POST' && method !== 'DELETE') throw new ApiError(404, 'not_found', 'Не знайдено');
     const body = method === 'POST' ? await readJson(req) : {};
+
+    if (pathname.startsWith('/api/admin/')) {
+      if (!isAdmin(user.id)) throw new ApiError(403, 'forbidden', 'Немає доступу');
+      const out = await admin.route(pathname, method, body, user);
+      if (out === undefined) throw new ApiError(404, 'not_found', 'Не знайдено');
+      return send(res, 200, { ok: true, ...out });
+    }
 
     switch (pathname) {
       case '/api/check-subscription': {
@@ -393,29 +352,6 @@ function createApp({ config, db, tg, bot, log = console }) {
       case '/api/withdraw':
         await withdraw(db.prepare('SELECT * FROM users WHERE id = ?').get(user.id), body);
         return send(res, 200, { ok: true, state: state() });
-    }
-
-    // ----- /api/admin/* -----
-    if (pathname.startsWith('/api/admin/')) {
-      if (!isAdmin(user.id)) throw new ApiError(403, 'forbidden', 'Немає доступу');
-      if (pathname === '/api/admin/overview' && method === 'POST') return send(res, 200, { ok: true, admin: adminOverview() });
-      if (pathname === '/api/admin/settings' && method === 'POST') {
-        adminSettings(body);
-        return send(res, 200, { ok: true, admin: adminOverview() });
-      }
-      if (pathname === '/api/admin/channels' && method === 'POST') {
-        const warning = await adminAddChannel(body);
-        return send(res, 200, { ok: true, warning, admin: adminOverview() });
-      }
-      let m;
-      if ((m = /^\/api\/admin\/channels\/([A-Za-z0-9_]{1,40})$/.exec(pathname)) && method === 'DELETE') {
-        db.prepare('DELETE FROM channels WHERE username = ?').run(m[1]);
-        return send(res, 200, { ok: true, admin: adminOverview() });
-      }
-      if ((m = /^\/api\/admin\/withdrawals\/(\d{1,12})$/.exec(pathname)) && method === 'POST') {
-        await adminResolve(parseInt(m[1], 10), body);
-        return send(res, 200, { ok: true, admin: adminOverview() });
-      }
     }
     throw new ApiError(404, 'not_found', 'Не знайдено');
   }
